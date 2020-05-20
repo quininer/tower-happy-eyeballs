@@ -1,3 +1,4 @@
+use std::io;
 use std::pin::Pin;
 use std::net::IpAddr;
 use std::marker::Unpin;
@@ -13,7 +14,6 @@ use tower_service::Service;
 
 
 pub struct HappyEyeballsFut<MC: Service<IpAddr>, IP> {
-    err_fn: fn() -> MC::Error,
     dur: Duration,
     timer: Delay,
     want: bool,
@@ -31,9 +31,9 @@ struct Sort<IP> {
 
 impl<MC: Service<IpAddr>, IP> HappyEyeballsFut<MC, IP> {
     #[inline]
-    pub(crate) fn new(err_fn: fn() -> MC::Error, dur: Duration, make_conn: MC, ips: IP) -> Self {
+    pub(crate) fn new(dur: Duration, make_conn: MC, ips: IP) -> Self {
         HappyEyeballsFut {
-            err_fn, dur, make_conn,
+            dur, make_conn,
             want: true,
             ips: Sort { queue: VecDeque::new(), ipflag: None, ips },
             queue: FuturesUnordered::new(),
@@ -45,6 +45,7 @@ impl<MC: Service<IpAddr>, IP> HappyEyeballsFut<MC, IP> {
 impl<MC, IP> Future for HappyEyeballsFut<MC, IP>
 where
     MC: Service<IpAddr> + Unpin,
+    MC::Error: From<io::Error>,
     IP: Stream<Item = IpAddr> + FusedStream + Unpin
 {
     type Output = Result<MC::Response, MC::Error>;
@@ -66,8 +67,10 @@ where
 
         match Pin::new(&mut self.queue).poll_next(cx) {
             Poll::Ready(Some(Ok(output))) => Poll::Ready(Ok(output)),
-            Poll::Ready(Some(Err(err))) if self.queue.is_empty() && self.ips.is_terminated() => Poll::Ready(Err(err)),
-            Poll::Ready(None) if self.queue.is_empty() && self.ips.is_terminated() => Poll::Ready(Err((self.err_fn)())),
+            Poll::Ready(Some(Err(err))) if self.queue.is_empty() && self.ips.is_terminated() =>
+                Poll::Ready(Err(err)),
+            Poll::Ready(None) if self.queue.is_empty() && self.ips.is_terminated() =>
+                Poll::Ready(Err(empty_err().into())),
             Poll::Ready(Some(Err(_))) | Poll::Ready(None) => {
                 self.want = true;
                 cx.waker().wake_by_ref();
@@ -124,4 +127,12 @@ where
     fn is_terminated(&self) -> bool {
         self.queue.is_empty() && self.ips.is_terminated()
     }
+}
+
+#[cold]
+fn empty_err() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::NotFound,
+        "happy eyeballs not found any address"
+    )
 }

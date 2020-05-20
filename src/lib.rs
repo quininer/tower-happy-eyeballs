@@ -1,5 +1,6 @@
 pub mod future;
 
+use std::io;
 use std::net::IpAddr;
 use std::marker::Unpin;
 use std::time::Duration;
@@ -11,20 +12,22 @@ use future::HappyEyeballsFut;
 
 
 #[derive(Clone, Debug)]
-pub struct HappyEyeballsLayer<E> {
-    err_fn: fn() -> E,
+pub struct HappyEyeballsLayer {
     dur: Duration
 }
 
-pub struct HappyEyeballs<MC: Service<IpAddr>> {
-    err_fn: fn() -> MC::Error,
+pub struct HappyEyeballs<MC>
+where
+    MC: Service<IpAddr>,
+    MC::Error: From<io::Error>
+{
     dur: Duration,
     make_conn: MC
 }
 
-impl<E> HappyEyeballsLayer<E> {
-    pub fn new(err_fn: fn() -> E) -> HappyEyeballsLayer<E> {
-        HappyEyeballsLayer { err_fn, dur: Duration::from_millis(250) }
+impl HappyEyeballsLayer {
+    pub fn new() -> HappyEyeballsLayer {
+        HappyEyeballsLayer { dur: Duration::from_millis(250) }
     }
 
     pub fn delay(mut self, dur: Duration) -> Self {
@@ -33,16 +36,16 @@ impl<E> HappyEyeballsLayer<E> {
     }
 }
 
-impl<MC> Layer<MC> for HappyEyeballsLayer<MC::Error>
+impl<MC> Layer<MC> for HappyEyeballsLayer
 where
-    MC: Service<IpAddr>
+    MC: Service<IpAddr>,
+    MC::Error: From<io::Error>
 {
     type Service = HappyEyeballs<MC>;
 
     fn layer(&self, service: MC) -> Self::Service {
         HappyEyeballs {
             make_conn: service,
-            err_fn: self.err_fn,
             dur: self.dur.clone()
         }
     }
@@ -51,6 +54,7 @@ where
 impl<IP, MC> Service<IP> for HappyEyeballs<MC>
 where
     MC: Service<IpAddr> + Unpin + Clone,
+    MC::Error: From<io::Error>,
     IP: Stream<Item = IpAddr> + FusedStream + Unpin
 {
     type Response = MC::Response;
@@ -62,6 +66,6 @@ where
     }
 
     fn call(&mut self, req: IP) -> Self::Future {
-        HappyEyeballsFut::new(self.err_fn, self.dur.clone(), self.make_conn.clone(), req)
+        HappyEyeballsFut::new(self.dur.clone(), self.make_conn.clone(), req)
     }
 }

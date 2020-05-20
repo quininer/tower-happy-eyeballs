@@ -34,7 +34,7 @@ async fn test_happy_eyeballs() -> io::Result<()> {
 
     let now = Instant::now();
 
-    let Connect(ip) = HappyEyeballsLayer::new(|| io::ErrorKind::NotFound.into())
+    let Connect(ip) = HappyEyeballsLayer::new()
         .layer(make_conn)
         .oneshot(stream::iter(ips).fuse()).await?;
 

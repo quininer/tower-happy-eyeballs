@@ -9,18 +9,22 @@ use std::task::{ Context, Poll };
 use futures_core::ready;
 use futures_core::stream::{ Stream, FusedStream };
 use futures_util::stream::FuturesUnordered;
-use tokio::time::{ Delay, Instant, delay_until };
+use tokio::time::{ Sleep, Instant, sleep_until };
 use tower_service::Service;
+use pin_project_lite::pin_project;
 
 
-pub struct HappyEyeballsFut<MC: Service<IpAddr>, IP> {
-    dur: Duration,
-    timer: Delay,
-    want: bool,
+pin_project!{
+    pub struct HappyEyeballsFut<MC: Service<IpAddr>, IP> {
+        dur: Duration,
+        #[pin]
+        timer: Sleep,
+        want: bool,
 
-    make_conn: MC,
-    ips: Sort<IP>,
-    queue: FuturesUnordered<MC::Future>,
+        make_conn: MC,
+        ips: Sort<IP>,
+        queue: FuturesUnordered<MC::Future>,
+    }
 }
 
 struct Sort<IP> {
@@ -37,7 +41,7 @@ impl<MC: Service<IpAddr>, IP> HappyEyeballsFut<MC, IP> {
             want: true,
             ips: Sort { queue: VecDeque::new(), ipflag: None, ips },
             queue: FuturesUnordered::new(),
-            timer: delay_until(Instant::now())
+            timer: sleep_until(Instant::now())
         }
     }
 }
@@ -50,29 +54,31 @@ where
 {
     type Output = Result<MC::Response, MC::Error>;
 
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<Self::Output> {
-        self.want |= Pin::new(&mut self.timer).poll(cx).is_ready();
+    fn poll(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Self::Output> {
+        let mut this = self.project();
 
-        if self.want && self.make_conn.poll_ready(cx).is_ready() {
-            if let Poll::Ready(Some(ip)) = Pin::new(&mut self.ips).poll_next(cx) {
-                let fut = self.make_conn.call(ip);
-                self.queue.push(fut);
+        *this.want |= this.timer.as_mut().poll(cx).is_ready();
 
-                let dst = Instant::now() + self.dur;
-                self.timer.reset(dst);
-                let _ = Pin::new(&mut self.timer).poll(cx);
-                self.want = false;
+        if *this.want && this.make_conn.poll_ready(cx).is_ready() {
+            if let Poll::Ready(Some(ip)) = Pin::new(&mut this.ips).poll_next(cx) {
+                let fut = this.make_conn.call(ip);
+                this.queue.push(fut);
+
+                let dst = Instant::now() + *this.dur;
+                this.timer.as_mut().reset(dst);
+                let _ = this.timer.as_mut().poll(cx);
+                *this.want = false;
             }
         }
 
-        match Pin::new(&mut self.queue).poll_next(cx) {
+        match Pin::new(&mut this.queue).poll_next(cx) {
             Poll::Ready(Some(Ok(output))) => Poll::Ready(Ok(output)),
-            Poll::Ready(Some(Err(err))) if self.queue.is_empty() && self.ips.is_terminated() =>
+            Poll::Ready(Some(Err(err))) if this.queue.is_empty() && this.ips.is_terminated() =>
                 Poll::Ready(Err(err)),
-            Poll::Ready(None) if self.queue.is_empty() && self.ips.is_terminated() =>
+            Poll::Ready(None) if this.queue.is_empty() && this.ips.is_terminated() =>
                 Poll::Ready(Err(empty_err().into())),
             Poll::Ready(Some(Err(_))) | Poll::Ready(None) => {
-                self.want = true;
+                *this.want = true;
                 cx.waker().wake_by_ref();
                 Poll::Pending
             },

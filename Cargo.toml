@@ -9,10 +9,11 @@ edition = "2018"
 [dependencies]
 tower-service = "0.3"
 tower-layer = "0.3"
-tokio = { version = "0.2", features = ["time"] }
+tokio = { version = "1", features = ["time"] }
 futures-core = "0.3"
 futures-util = "0.3"
+pin-project-lite = "0.2"
 
 [dev-dependencies]
 tower-util = "0.3"
-tokio = { version = "0.2", features = ["macros", "rt-core"] }
+tokio = { version = "1", features = ["macros", "rt"] }

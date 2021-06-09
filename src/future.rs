@@ -24,6 +24,7 @@ pin_project!{
         make_conn: MC,
         ips: Sort<IP>,
         queue: FuturesUnordered<MC::Future>,
+        error: Option<MC::Error>
     }
 }
 
@@ -41,7 +42,8 @@ impl<MC: Service<IpAddr>, IP> HappyEyeballsFut<MC, IP> {
             want: true,
             ips: Sort { queue: VecDeque::new(), ipflag: None, ips },
             queue: FuturesUnordered::new(),
-            timer: sleep_until(Instant::now())
+            timer: sleep_until(Instant::now()),
+            error: None
         }
     }
 }
@@ -76,8 +78,18 @@ where
             Poll::Ready(Some(Err(err))) if this.queue.is_empty() && this.ips.is_terminated() =>
                 Poll::Ready(Err(err)),
             Poll::Ready(None) if this.queue.is_empty() && this.ips.is_terminated() =>
-                Poll::Ready(Err(empty_err().into())),
-            Poll::Ready(Some(Err(_))) | Poll::Ready(None) => {
+                Poll::Ready(Err(if let Some(err) = this.error.take() {
+                    err
+                } else {
+                    empty_err().into()
+                })),
+            Poll::Ready(Some(Err(err))) => {
+                *this.error = Some(err);
+                *this.want = true;
+                cx.waker().wake_by_ref();
+                Poll::Pending
+            },
+            Poll::Ready(None) => {
                 *this.want = true;
                 cx.waker().wake_by_ref();
                 Poll::Pending
